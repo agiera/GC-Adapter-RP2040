@@ -1,6 +1,18 @@
 #include "adapter_includes.h"
-#include "ws2812.pio.h"
 #include "joybus.pio.h"
+
+// RGB LED type selector (0 = WS2812, 1 = SK6805-EC15)
+#define RGB_LED_TYPE 1
+
+#if RGB_LED_TYPE == 0
+#include "ws2812.pio.h"
+#define RGB_PIO_PROGRAM ws2812_program
+#define RGB_PIO_INIT ws2812_program_init
+#else
+#include "sk6805_ec15.pio.h"
+#define RGB_PIO_PROGRAM sk6805_ec15_program
+#define RGB_PIO_INIT sk6805_ec15_program_init
+#endif
 
 #define RGB_PIO pio1
 #define RGB_SM 0

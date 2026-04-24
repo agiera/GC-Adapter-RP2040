@@ -87,6 +87,7 @@ pico_enable_stdio_usb(${PROJECT_NAME} 0)
 
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/include/generated)
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/ws2812.pio OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/include/generated)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/sk6805_ec15.pio OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/include/generated)
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/joybus.pio OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/include/generated)
 
 target_compile_definitions(${PROJECT_NAME}
