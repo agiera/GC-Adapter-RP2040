@@ -27,20 +27,23 @@ uint8_t delay_cycles = 0;
 bool _port_rumble[4] = {false, false, false, false};
 
 // Raw joybus command passthrough (for WebUSB)
+// Buffers sized for up to 1024-byte commands and responses (display-list
+// transfers fit a typical menu frame in a single chunk).
+#define RAW_BUF_SIZE 1024
 volatile bool _port_raw_cmd_pending[4]          = {false};
-volatile uint8_t _port_raw_cmd_buf[4][128]       = {0};
-volatile uint8_t _port_raw_cmd_len[4]            = {0};
+volatile uint8_t _port_raw_cmd_buf[4][RAW_BUF_SIZE] = {0};
+volatile uint16_t _port_raw_cmd_len[4]           = {0};
 volatile bool _port_raw_expect_response[4]       = {false};
-volatile uint8_t _port_raw_expected_len[4]       = {0};
-volatile uint8_t _port_raw_response[4][128]      = {0};
-volatile uint8_t _port_raw_response_len[4]       = {0};
+volatile uint16_t _port_raw_expected_len[4]      = {0};
+volatile uint8_t _port_raw_response[4][RAW_BUF_SIZE] = {0};
+volatile uint16_t _port_raw_response_len[4]      = {0};
 volatile bool _port_raw_response_ready[4]        = {false};
 static bool _port_raw_drained[4]                 = {false};
 
-void joybus_itf_queue_raw_cmd(uint8_t port, uint8_t *cmd, uint8_t cmd_len, uint8_t resp_len) {
+void joybus_itf_queue_raw_cmd(uint8_t port, uint8_t *cmd, uint16_t cmd_len, uint16_t resp_len) {
     if (port >= 4) return;
-    uint8_t n = cmd_len < 128 ? cmd_len : 128;
-    uint8_t r = resp_len < 128 ? resp_len : 128;
+    uint16_t n = cmd_len < RAW_BUF_SIZE ? cmd_len : RAW_BUF_SIZE;
+    uint16_t r = resp_len < RAW_BUF_SIZE ? resp_len : RAW_BUF_SIZE;
     memcpy((void*)_port_raw_cmd_buf[port], cmd, n);
     _port_raw_cmd_len[port] = n;
     _port_raw_expected_len[port] = r;
@@ -48,13 +51,20 @@ void joybus_itf_queue_raw_cmd(uint8_t port, uint8_t *cmd, uint8_t cmd_len, uint8
     _port_raw_cmd_pending[port] = true;
 }
 
-bool joybus_itf_consume_raw_response(uint8_t port, uint8_t *buf, uint8_t *out_len) {
+bool joybus_itf_consume_raw_response(uint8_t port, uint8_t *buf, uint16_t *out_len) {
     if (port >= 4 || !_port_raw_response_ready[port]) return false;
-    uint8_t len = _port_raw_response_len[port];
+    uint16_t len = _port_raw_response_len[port];
     memcpy(buf, (void*)_port_raw_response[port], len);
     *out_len = len;
     _port_raw_response_ready[port] = false;
     return true;
+}
+
+bool joybus_itf_has_raw_pending(void) {
+    for (uint i = 0; i < 4; i++) {
+        if (_port_raw_cmd_pending[i]) return true;
+    }
+    return false;
 }
 
 typedef struct
@@ -219,18 +229,18 @@ void _gamecube_get_data()
 // Trailing bytes (when response isn't a multiple of 4) are recovered via
 // a forced ISR push.
 static void _drain_raw_response(uint port) {
-    uint8_t expected = _port_raw_expected_len[port];
+    uint16_t expected = _port_raw_expected_len[port];
     if (expected == 0) expected = 8;  // fallback
 
     // Number of full 32-bit words the PIO will auto-push.
     // response_bits = expected*8 + 1 (stop bit).
     // full_words = floor(response_bits / 32)
-    uint16_t response_bits = (uint16_t)expected * 8 + 1;
-    uint16_t full_words = response_bits / 32;
-    uint16_t remaining_bits = response_bits % 32;
+    uint32_t response_bits = (uint32_t)expected * 8 + 1;
+    uint32_t full_words = response_bits / 32;
+    uint32_t remaining_bits = response_bits % 32;
 
     uint8_t *buf = (uint8_t *)_port_raw_response[port];
-    uint8_t byte_pos = 0;
+    uint16_t byte_pos = 0;
 
     // First-word timeout is long (50ms) because the controller may need to
     // perform slow operations (e.g. flash erase/write) before responding.
@@ -239,7 +249,7 @@ static void _drain_raw_response(uint port) {
     uint32_t word_timeout_us = 50000;
 
     // Read full 32-bit words from FIFO
-    for (uint16_t w = 0; w < full_words && byte_pos + 4 <= 128; w++) {
+    for (uint32_t w = 0; w < full_words && byte_pos + 4 <= RAW_BUF_SIZE; w++) {
         uint32_t t = time_us_32();
         while (pio_sm_is_rx_fifo_empty(JOYBUS_PIO, port)) {
             if (time_us_32() - t > word_timeout_us) goto cleanup;
@@ -275,7 +285,7 @@ static void _drain_raw_response(uint port) {
             // [remaining_bits-1 : 0].  Shift left to align to MSB.
             word <<= (32 - remaining_bits);
             uint8_t data_bytes = (remaining_bits - 1) / 8;  // exclude stop bit
-            for (uint8_t i = 0; i < data_bytes && byte_pos < 128; i++) {
+            for (uint8_t i = 0; i < data_bytes && byte_pos < RAW_BUF_SIZE; i++) {
                 buf[byte_pos++] = (word >> 24) & 0xFF;
                 word <<= 8;
             }
@@ -357,7 +367,7 @@ void _gamecube_send_probe()
     // since the SM is consuming bytes as it transmits.
     for (uint i = 0; i < 4; i++) {
         if (raw_preloaded[i] > 0) {
-            for (uint8_t b = raw_preloaded[i]; b < _port_raw_cmd_len[i]; b++) {
+            for (uint16_t b = raw_preloaded[i]; b < _port_raw_cmd_len[i]; b++) {
                 pio_sm_put_blocking(JOYBUS_PIO, i, ALIGNED_JOYBUS_8(_port_raw_cmd_buf[i][b]));
             }
         }
